@@ -1,0 +1,14 @@
+from pseudo_semantic_graph import SemanticGraph
+
+# %%
+# g = Graph.from_text("Susy bought a car. She didn't like it.")
+
+# g = SemanticGraph.from_text(
+#     "Born December 15 , 1850 in Walkill in upstate New York , Seymour came to Bayonne , New Jersey in the 1880s and became active in Democratic Party politics ."
+# )
+
+g = SemanticGraph.from_text(
+    'He stopped dead immediately, unable to say anything more. That was his one and only attempt to bring Aglaya to her senses; he then followed her slavishly. However disordered his thoughts were, he realized that nothing would stop her from going there, and consequently he was duty-bound to go with her. He could tell the strength of her resolve and how futile it would be for him to stand in her way. They walked in silence, hardly a word passed between them. He could not help noticing how well she knew the way, and when he suggested making a slight detour because it was less crowded along there, she heard him out as though under strain, and replied curtly, "Makes no difference!" As they drew level with Darya Alexeyevna\'s large old timber house, a splendidly attired lady in the company of a much younger woman emerged from the front door. They both got into a magnificent calash, which was waiting in the driveway, talking and laughing loudly, without so much as a glance at the two approaching figures as though they had not even noticed them. As soon as the calash had moved off, the door opened for a second time, and Rogozhin, who was already expecting them, let them in and shut it behind them.'
+)
+
+print(g)

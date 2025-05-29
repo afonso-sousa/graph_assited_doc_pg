@@ -74,7 +74,10 @@ class SemanticGraph(LinearizationMixin):
             tree = TreeNode.from_spacy(sentence)
             if tree is None:
                 return None
+            print(tree)
             tree.prune_and_merge()
+            print("-" * 20)
+            print(tree)
             tree.rearrange()
             graph = cls(*tree.generate_graph())
             graphs.append(graph)

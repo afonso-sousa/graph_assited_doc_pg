@@ -6,6 +6,6 @@ __pycache__/
 
 ### Local ###
 output/
-raw-data/
+data/
 processed-data/
 coreferee/

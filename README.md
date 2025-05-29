@@ -25,9 +25,9 @@ We use pseudo-semantic graphs from [sem_para_gen](https://github.com/afonso-sous
 Original data collected from [Par3 repository](https://github.com/katherinethai/par3).
 
 ### Build Paraphrase Corpus
-1. Place data in `\raw-data` and navigate there:
+1. Place data in `\data` and navigate there:
 ```
-cd raw-data
+cd data
 ```
 2. Prepare dataset:
 ```
