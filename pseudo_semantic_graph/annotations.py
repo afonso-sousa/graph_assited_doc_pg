@@ -1,77 +1,4 @@
-from typing import Final, List
-
-PRUNE_LIST = ["punct", "cc", "preconj", "mark", "case", "det"]
-
-# Penn TreeBank POS
-VERB_POS: Final[List[str]] = [
-    "VBZ",  # Verb, 3rd person singular present
-    "VBN",  # Verb, past participle
-    "VBD",  # Verb, past tense
-    "VBP",  # Verb, non-3rd person singular present
-    "VB",  # Verb, base form
-    "VBG",  # Verb, gerund or present participle
-]
-
-NOUN_POS: Final[List[str]] = ["NN", "NNP", "NNS", "NNPS"]
-
-# Stanford typed dependencies
-SUBJ_LABELS: Final[List[str]] = [
-    "nsubj",  # nominal subject
-    "nsubjpass",  # passive nominal subject
-    "csubj",  # clausal subject
-    "csubjpass",  # clausal passive subject
-]
-OBJ_LABELS: Final[List[str]] = [
-    "dobj",  # direct object
-    "pobj",  # object of a preposition
-    "iobj",  # indirect object
-]
-SUBJ_AND_OBJ: Final[List[str]] = SUBJ_LABELS + OBJ_LABELS
-
-# CONJ: Final[List[str]] = ["conj", "parataxis"]
-CONJ: Final[List[str]] = ["conj", "cc", "preconj", "parataxis"]
-
-PREP_POS: Final[List[str]] = ["PP", "IN", "TO"]
-
-MODIFIER_POS: Final[List[str]] = [
-    "JJ",
-    "FW",
-    "JJR",
-    "JJS",
-    "RB",
-    "RBR",
-    "RBS",
-    "WRB",
-    # "CD",
-]
-MODIFIERS: Final[List[str]] = [
-    "amod",
-    "nn",
-    "mwe",
-    "num",
-    "quantmod",
-    "dep",
-    "number",
-    "auxpass",
-    "partmod",
-    # "poss",
-    "possessive",
-    "neg",
-    "advmod",
-    # "npadvmod",
-    "advcl",
-    "aux",
-    "det",
-    "predet",
-    # "appos",
-]
-ADDITIONAL_TO_MERGE: Final[List[str]] = [
-    # "nummod",
-    "nmod",
-    "punct",
-    "compound",
-]
-MODIFIERS_PLUS: Final[List[str]] = MODIFIERS + ADDITIONAL_TO_MERGE
+from typing import Final, List, Set
 
 MONTHS: Final[List[str]] = [
     "january",
@@ -88,10 +15,89 @@ MONTHS: Final[List[str]] = [
     "december",
 ]
 
+# Content word POS tags (should generally be preserved)
+CONTENT_POS: Final[Set[str]] = {
+    # Nouns
+    "NN", "NNS", "NNP", "NNPS",
+    # Verbs
+    "VB", "VBD", "VBG", "VBN", "VBP", "VBZ",
+    # Adjectives
+    "JJ", "JJR", "JJS",
+    # Adverbs
+    "RB", "RBR", "RBS"
+}
+
+# Noun POS tags (subset of CONTENT_POS)
+NOUN_POS: Final[Set[str]] = {
+    "NN", "NNS", "NNP", "NNPS",  # Regular nouns
+    "PRP", "PRP$",               # Pronouns
+    "CD"                         # Numbers (often behave like nouns)
+}
+
+# Pronouns (important for coreference)
+PRONOUN_POS: Final[Set[str]] = {"PRP", "PRP$"}
+
+VERB_TAGS = {"VB", "VBD", "VBG", "VBN", "VBP", "VBZ"}
+NOUN_TAGS = {"NN", "NNS"}  # subset of NOUN_POS for visualization
+PROPN_TAGS = {"NNP", "NNPS"}
+
+# WH-words (important for questions and relative clauses)
+WH_POS: Final[Set[str]] = {"WP", "WP$", "WRB", "WDT"}
+
+# Numbers and quantifiers
+QUANTIFIER_POS: Final[Set[str]] = {"CD"}
+
+# Prepositions and particles
+PREP_POS: Final[Set[str]] = {"IN", "TO"}
+
+# Argument-like dependencies
+SUBJ_LABELS: Final[List[str]] = [
+    "nsubj", "nsubjpass", "csubj", "csubjpass", "expl"
+]
+OBJ_LABELS: Final[List[str]] = [
+    "dobj", "iobj", "obj", "pobj", "attr", "oprd"
+]
+CLAUSAL_COMPLEMENTS: Final[List[str]] = [
+    "ccomp", "xcomp"
+]
+CONJ: Final[List[str]] = [
+    "conj", "cc", "preconj", "parataxis"
+]
+
+ARGUMENT_LABELS: Final[List[str]] = SUBJ_LABELS + OBJ_LABELS + CLAUSAL_COMPLEMENTS + ["agent"]
+
+# Modifier-like dependencies
+MODIFIER_LABELS: Final[List[str]] = [
+    "amod", "advmod", "nmod", "appos", "acl", "advcl", "relcl",
+    "poss", "prep", "quantmod", "npadvmod", "tmod", "prt"
+]
+
+# Dependencies to ignore (often function words or non-content)
+IGNORED_LABELS: Final[List[str]] = [
+    "punct", "aux", "cop", "cc", "mark", "case", "det", "auxpass"
+]
+
+# Special cases that should be preserved despite being in IGNORED_LABELS
+PRESERVE_LABELS: Final[Set[str]] = {"neg"}  # Negation markers
+
 RELATIONS_MAPPING = {
     **dict.fromkeys(SUBJ_LABELS, "ARG0"),
     **dict.fromkeys(OBJ_LABELS, "ARG1"),
     "acomp": "ARG2",
-    # "dative": "to",
-    # "poss": "of",
+    "xcomp": "ARG2",
+    "ccomp": "ARG2",
+    "advcl": "ARGM",     # Adverbial clause
+    "advmod": "ARGM",    # Adverbial modifier
+    "amod": "MOD",       # Adjective modifier
+    "nmod": "MOD",       # Noun modifier
+    "poss": "poss",      # Possessive (could be 'of' or ARG0 depending)
+    "prep": "prep",      # Prepositional link
+    "pobj": "ARG1",      # Often object of preposition, same as OBJ
+    "appos": "MOD",      # Appositional modifier
+    "compound": "MOD",   # Noun compound
+    "nn": "MOD",         # Legacy noun compound
+    "conj": "CONJ",      # Coordinated conjunction
+    "cc": "CONJ",        # Conjunction
+    "attr": "ARG1",      # Attribute (copula predicate)
+    "relcl": "ARGM",     # Relative clause
 }

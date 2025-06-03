@@ -1,78 +1,107 @@
 import itertools
+from typing import List
 
-from ..annotations import *
+from ..annotations import (CONTENT_POS, IGNORED_LABELS, MODIFIER_LABELS,
+                           MONTHS, PREP_POS, PRESERVE_LABELS, PRONOUN_POS,
+                           QUANTIFIER_POS, WH_POS)
 
 
 class PruneAndMergeMixin:
     def met_pruning_conditions(self, node: "TreeNode") -> bool:
-        return (
-            node.onto_tag not in PREP_POS
-            and (node.dep in PRUNE_LIST or node.ud_pos == "AUX")
-            and node.word != ["-"]
-        )
+        """Determine if a node should be pruned from the semantic graph."""
+        # Keep all content words
+        if node.onto_tag in CONTENT_POS:
+            return False
+          
+        # Keep pronouns
+        if node.onto_tag in PRONOUN_POS:
+            return False
+       
+        # Keep wh-words
+        if node.onto_tag in WH_POS:
+            return False
+        
+        # Keep numbers and quantifiers unless they're simple determiners
+        if node.onto_tag in QUANTIFIER_POS and node.dep != "det":
+            return False
+        
+        # Check if this is a label we generally ignore
+        if node.dep in IGNORED_LABELS:
+            # But preserve special cases
+            if node.dep in PRESERVE_LABELS:
+                return False
+            return True
+        
+        # Keep prepositions as they often indicate semantic relations
+        if node.onto_tag in PREP_POS:
+            return False
+        
+        # Default: keep the node if we're unsure
+        return False
 
-    def handle_negation(self, candidates_to_join, remaining_attributes):
-        found_negation = False
-        for attribute in candidates_to_join:
-            if attribute.dep == "neg":
-                found_negation = True
-                attribute.word = ["not"]
-        if found_negation:
-            for attribute in candidates_to_join:
-                if attribute.ud_pos == "AUX" and attribute.onto_tag == "VBD":
-                    candidates_to_join.remove(attribute)
+    def handle_negation(self, candidates_to_merge: List["TreeNode"]) -> List["TreeNode"]:
+        """Handle negation words in the modifiers to be merged."""
+        # Find and standardize negation markers
+        for modifier in candidates_to_merge:
+            if modifier.dep == "neg":
+                modifier.word = ["not"]  # Standardize negation representation
+        
+        # Remove auxiliary verbs if we found a negation (no longer needed as we're keeping auxiliaries)
+        return candidates_to_merge
 
-        return candidates_to_join, remaining_attributes
-
-    def merge_nodes(self) -> None:
-        if not self.attributes:
+    def merge_modifiers(self) -> None:
+        """Merge adjacent modifiers into the current node when appropriate."""
+        if not self.modifiers:
             return
 
-        candidates_to_join = [
-            attribute
-            for attribute in self.attributes
-            if (not attribute.children)  # is leaf node
-            and (
-                (attribute.dep in MODIFIERS_PLUS or attribute.onto_tag in MODIFIER_POS)
-                and not attribute.onto_tag == "WRB"
-            )  # has the syntactic type we want to merge
-            and not any(word.lower() in MONTHS for word in attribute.word)
+        # Find modifiers that meet our criteria for merging
+        candidates_to_merge = [
+            modifier
+            for modifier in self.modifiers
+            if not modifier.arguments and not modifier.modifiers  # Is leaf node
+            and modifier.dep in MODIFIER_LABELS  # Has modifier dependency type
+            and modifier.onto_tag in CONTENT_POS.union({"RB", "IN", "TO"})  # Content words or prepositions
+            and not any(word.lower() in MONTHS for word in modifier.word)  # Not a month name
         ]
-        if not candidates_to_join:
+
+        if not candidates_to_merge:
             return
 
-        remaining_attributes = [
-            attribute
-            for attribute in self.attributes
-            if attribute not in candidates_to_join
+        remaining_modifiers = [
+            modifier for modifier in self.modifiers 
+            if modifier not in candidates_to_merge
         ]
 
-        candidates_to_join, remaining_attributes = self.handle_negation(
-            candidates_to_join, remaining_attributes
+        candidates_to_merge = self.handle_negation(
+            candidates_to_merge
         )
 
-        word_list, index_list = zip(
-            *[(candidate.word, candidate.index) for candidate in candidates_to_join]
-            + [(self.word, self.index)]
-        )
-
-        sorted_pairs = sorted(zip(word_list, index_list), key=lambda pair: min(pair[1]))
-
-        sorted_words, sorted_indices = list(zip(*sorted_pairs))
-
-        self.word = list(itertools.chain(*sorted_words))
-        self.index = list(itertools.chain(*sorted_indices))
-        self.attributes = remaining_attributes
+        # Combine words and indices in sentence order
+        all_elements = [(mod.word, mod.index) for mod in candidates_to_merge] + [(self.word, self.index)]
+        sorted_elements = sorted(all_elements, key=lambda x: min(x[1]))
+        
+        # Flatten and update the current node
+        self.word = list(itertools.chain(*[words for words, _ in sorted_elements]))
+        self.index = list(itertools.chain(*[indices for _, indices in sorted_elements]))
+        self.modifiers = remaining_modifiers
 
     def prune_and_merge(self) -> None:
-        for child in self.children:
-            if self.met_pruning_conditions(child):
-                # redirect children of pruned nodes to grandparents
-                self.add_nouns(child.nouns)
-                self.add_verbs(child.verbs)
-                self.add_attributes(child.attributes)
-                self.remove_child(child)
+        """Prune unnecessary nodes and merge adjacent modifiers."""
+        # Process children first (post-order traversal)
+        for child in self.arguments + self.modifiers:
+            child.prune_and_merge()
 
-        [c.prune_and_merge() for c in self.children]
+        # Prune arguments
+        self.arguments = [
+            arg for arg in self.arguments 
+            if not self.met_pruning_conditions(arg)
+        ]
 
-        self.merge_nodes()
+        # Prune modifiers
+        self.modifiers = [
+            mod for mod in self.modifiers 
+            if not self.met_pruning_conditions(mod)
+        ]
+
+        # Merge adjacent modifiers
+        self.merge_modifiers()
