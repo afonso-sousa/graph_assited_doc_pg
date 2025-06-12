@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import spacy
 from nltk.corpus import stopwords
@@ -32,6 +32,13 @@ class SemanticNode:
     def __str__(self):
         return f"SemanticNode({self.word}, roles={self.semantic_role}, pred={self.predicate})"
 
+    def to_dict(self):
+        return {
+            'word': self.word,
+            'index': self.index,
+            'onto_tag': self.onto_tag,
+        }
+
 
 class SemanticGraph(LinearizationMixin, VisualizationMixin):
     nlp = None
@@ -40,7 +47,6 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
         self,
         nodes: List[Union[SemanticNode, Dict]] = [],
         edges: List[Union[Tuple, Dict]] = [],
-        coreferences: Optional[Dict] = None
     ):
         self.nodes = [
             node if isinstance(node, SemanticNode) else SemanticNode(**node)
@@ -50,7 +56,6 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
             (edge["from"], edge["to"], edge["relation"]) if isinstance(edge, dict) else edge
             for edge in edges
         ]
-        self.coreferences = coreferences or {}
 
     def __len__(self):
         return len(self.nodes)
@@ -66,7 +71,6 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
                 new_text.append(token.text)
 
         original_tokens = [token.text for token in text]
-        breakpoint()
         assert len(new_text) == len(original_tokens), f"Length mismatch: {len(new_text)} != {len(original_tokens)}"
         return " ".join(new_text)
 
@@ -86,6 +90,7 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
             tree = TreeNode.from_spacy(sentence)
             if tree is None:
                 return None
+
             tree.prune_and_merge()
             tree.rearrange()
             graph = cls(*tree.generate_graph())
@@ -111,6 +116,15 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
         nodes_str = "".join(f"{n.word}, {n.index}, {n.onto_tag}, {n.dep}\n" for n in self.nodes)
         edges_str = "".join(f"{self.nodes[a]} -{r}-> {self.nodes[b]}\n" for a, b, r in self.edges)
         return f"Nodes:\n{nodes_str}\nEdges:\n{edges_str}"
+
+    def to_dict(self):
+        return {
+            "nodes": [node.to_dict() for node in self.nodes],
+            "edges": [
+                {"from": s, "to": t, "relation": r}
+                for s, t, r in self.edges
+            ]
+        }
 
     @classmethod
     def find_similar(cls, nodes, edges):
@@ -156,7 +170,6 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
             if not norm_i:
                 continue
 
-            breakpoint()
             for j in range(i + 1, len(nodes)):
                 norm_j = normalize(nodes[j].word, nodes[j].onto_tag)
                 if norm_i == norm_j or is_merge_candidate(i, j):
@@ -202,8 +215,8 @@ class SemanticGraph(LinearizationMixin, VisualizationMixin):
             total_edges.extend([(s + offset, t + offset, r) for s, t, r in graph.edges])
             offset += len(graph.nodes)
 
-        # total_edges = cls.find_similar(total_nodes, total_edges)
-        # total_nodes, total_edges = cls.remove_dangling_nodes(total_nodes, total_edges)
-        # total_edges = cls.simplify_relations(total_edges)
-        # total_edges = cls.set_date_relations(total_nodes, total_edges)
+        total_edges = cls.find_similar(total_nodes, total_edges)
+        total_nodes, total_edges = cls.remove_dangling_nodes(total_nodes, total_edges)
+        total_edges = cls.simplify_relations(total_edges)
+        total_edges = cls.set_date_relations(total_nodes, total_edges)
         return cls(total_nodes, total_edges)

@@ -3,9 +3,12 @@ import json
 import logging
 import math
 import os
+from collections import defaultdict
+from functools import partial
 
 import datasets
 import evaluate
+import spacy
 import torch
 import transformers
 from accelerate import Accelerator, DistributedDataParallelKwargs
@@ -20,6 +23,71 @@ from transformers import (AutoModelForSeq2SeqLM, AutoTokenizer,
 from custom_model import CustomLongT5ForConditionalGeneration
 
 logger = get_logger(__name__)
+nlp = spacy.load("en_core_web_lg")
+
+
+def preprocess_function(examples, tokenizer, args):
+    inputs = examples["source"]
+    targets = examples["target"]
+
+    # Tokenize source texts using SpaCy for proper matching with semantic graphs
+    split_sources = [[token.text for token in nlp(text)] for text in inputs]
+
+    # Tokenize inputs and targets
+    tokenized_inputs = tokenizer(
+        split_sources,
+        max_length=args.max_seq_length,
+        truncation=True,
+        padding="max_length",
+        is_split_into_words=True,
+        return_offsets_mapping=True,
+        return_tensors="pt"
+    )
+
+    tokenized_targets = tokenizer(
+        targets,
+        max_length=args.max_seq_length,
+        truncation=True,
+        padding="max_length",
+        return_tensors="pt"
+    )
+
+    model_inputs = {
+        "input_ids": tokenized_inputs["input_ids"],
+        "attention_mask": tokenized_inputs["attention_mask"],
+        "labels": tokenized_targets["input_ids"],
+    }
+
+    # Graph preprocessing
+    if args.with_graph:
+        graph_edges_batch = []
+
+        for b, graph in enumerate(examples["semantic_graph"]):
+            word_ids = tokenized_inputs.word_ids(batch_index=b)
+
+            # Map word indices to all subword token indices
+            word_to_tokens = defaultdict(list)
+            for token_idx, word_idx in enumerate(word_ids):
+                if word_idx is not None:
+                    word_to_tokens[word_idx].append(token_idx)
+
+            # Build token-level edges from word-level graph edges
+            token_edges = set()
+            for edge in graph.get("edges", []):
+                from_node_idx = edge["from"]
+                to_node_idx = edge["to"]
+                from_token_ids = word_to_tokens.get(from_node_idx, [])
+                to_token_ids = word_to_tokens.get(to_node_idx, [])
+                for tid1 in from_token_ids:
+                    for tid2 in to_token_ids:
+                        token_edges.add((tid1, tid2))
+                        token_edges.add((tid2, tid1))  # Add reverse edge for undirected graph
+
+            graph_edges_batch.append(list(token_edges))
+
+        model_inputs["graph_edges"] = graph_edges_batch
+
+    return model_inputs
 
 
 def parse_args():
@@ -171,111 +239,35 @@ def main():
     # dataset["train"] = dataset["train"].select(range(100))
     # dataset["validation"] = dataset["validation"].select(range(100))
 
-    def preprocess_function(examples):
-        inputs = examples["source"]
-        targets = examples["target"]
-
-        # Tokenize inputs and targets
-        tokenized_inputs = tokenizer(
-            inputs,
-            max_length=args.max_seq_length,
-            truncation=True,
-            padding="max_length",
-            return_offsets_mapping=True,
-            return_tensors="pt"
-            # is_split_into_words=True,
-        )
-
-        tokenized_targets = tokenizer(
-            targets,
-            max_length=args.max_seq_length,
-            truncation=True,
-            padding="max_length",
-            return_tensors="pt"
-        )
-        breakpoint()
-
-        # Graph preprocessing
-        if args.with_graph:
-            graph_edges_batch = []
-
-            for b, graph in enumerate(examples["semantic_graph"]):
-                input_text = inputs[b]
-                offset_mapping = tokenized_inputs["offset_mapping"][b].tolist()
-                important_edges = []
-                breakpoint()
-                # === Step 1: Optional Node Filtering Heuristic ===
-                # Keep only nodes with at least one edge and word length > 2
-                node_indices = []
-                for node in graph["nodes"]:
-                    if len(node["index"]) > 0 and any(len(w) > 2 for w in node["word"]):
-                        node_indices.append(node["index"])
-
-                # === Step 2: Connect All Node Pairs as Edges ===
-                for i, node_a in enumerate(node_indices):
-                    for j in range(i + 1, len(node_indices)):
-                        node_b = node_indices[j]
-                        for idx_a in node_a:
-                            for idx_b in node_b:
-                                if idx_a != idx_b:
-                                    important_edges.append((idx_a, idx_b))
-
-                # === Step 3: Map Word-Level Indices to Token Indices ===
-                char_to_token_map = {}
-                for tok_id, (start, end) in enumerate(offset_mapping):
-                    for i in range(start, end):
-                        char_to_token_map[i] = tok_id
-
-                # Convert word-based edges to subword token edges
-                token_edges = set()
-                words = input_text.split()
-
-                for idx_a, idx_b in important_edges:
-                    try:
-                        word_a = words[idx_a]
-                        word_b = words[idx_b]
-
-                        # Find character spans for the words
-                        start_a = input_text.find(word_a)
-                        start_b = input_text.find(word_b)
-
-                        # Find all token indices overlapping with these word spans
-                        tokens_a = set()
-                        tokens_b = set()
-                        for i in range(len(input_text)):
-                            if start_a <= i < start_a + len(word_a) and i in char_to_token_map:
-                                tokens_a.add(char_to_token_map[i])
-                            if start_b <= i < start_b + len(word_b) and i in char_to_token_map:
-                                tokens_b.add(char_to_token_map[i])
-
-                        # Create full cross-product edges
-                        for ta in tokens_a:
-                            for tb in tokens_b:
-                                token_edges.add((ta, tb))
-                                token_edges.add((tb, ta))  # bidirectional
-
-                    except IndexError:
-                        continue  # skip edge if word index is out of range
-
-                graph_edges_batch.append(list(token_edges))
-
-            model_inputs["graph_edges"] = graph_edges_batch
-
-        return model_inputs
+    preprocess_partial = partial(preprocess_function, tokenizer=tokenizer, args=args)
 
     train_dataset = dataset["train"].map(
-        preprocess_function,
+        preprocess_partial,
         batched=True,
         remove_columns=column_names,
     )
     eval_dataset = dataset["validation"].map(
-        preprocess_function,
+        preprocess_partial,
         batched=True,
         remove_columns=column_names,
     )
 
     # Data collator
-    data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+    if args.with_graph:
+        class CustomDataCollator(DataCollatorForSeq2Seq):
+            def __call__(self, features):
+                # Separate out graph_edges
+                graph_edges = [f.pop("graph_edges") for f in features]
+
+                # Use default collator for the rest
+                batch = super().__call__(features)
+
+                # Add graph_edges back manually
+                batch["graph_edges"] = graph_edges
+                return batch
+        data_collator = CustomDataCollator(tokenizer, model=model)
+    else:
+        data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
     # DataLoader
     train_dataloader = DataLoader(

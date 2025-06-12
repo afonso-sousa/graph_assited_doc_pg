@@ -38,11 +38,20 @@ python prepare_paraphrase_dataset.py
 python normalize_data.py
 ```
 
-###
-Generate graph-enhanced dataset:
+4. **(Optional)** Generate graph-enhanced dataset:
 ```
 python create_data_with_graph.py
 ```
+
+5. Split data:
+```
+sh ./scripts/split_dataset.sh
+```
+or
+```
+sh ./scripts/split_dataset_with_graph.sh
+```
+_Note: As it is, the former script randomly splits the data, while the latter uses the indices generated from the former scripts' execution to split the data for fair comparison._
 
 ## Train and test models
 To train/test SAPG or any other model refered to in the paper you can run the corresponding script. For example:

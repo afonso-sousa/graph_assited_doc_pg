@@ -81,9 +81,7 @@ class TreeNode(PruneAndMergeMixin, RearrangeMixin, VisualizationMixin):
 
     @classmethod
     def from_spacy(cls, sentence: Span) -> "TreeNode":
-        def recursive_build_tree(token):
-            breakpoint()
-            
+        def recursive_build_tree(token):            
             node = cls(
                 word=[token.text],
                 index=[token.i],
