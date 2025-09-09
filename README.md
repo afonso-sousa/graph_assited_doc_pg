@@ -1,19 +1,34 @@
-# SAPG: Semantically-Aware Paraphrase Generation with AMR Graphs
+# Graph-assisted Paraphrase Generation for Long Texts
 
+TL;DR: We extend BigBird-Pegasus with a graph-aware attention mask. Instead of random block connections, we wire blocks using the connectivity of a pseudo-semantic graph extracted from the input, enabling long-context paraphrasing with structured inductive bias.
 
-This repo contains the code for the paper SAPG: Semantically-Aware Paraphrase Generation with AMR Graphs, by Afonso Sousa & Henrique Lopes Cardoso (accepted at ICAART 2025).
+```
+⚠️ Disclaimer
+This project is ⚠️ Disclaimer
+This project is experimental. In our initial trials, we did not achieve strong results compared to the baseline BigBird-Pegasus.
+That said, the idea of replacing random attention with graph-assisted masks may still be useful, and this code could serve as a starting point for others exploring long-context paraphrasing with structural priors.. In our initial trials, we did not achieve strong results compared to the baseline BigBird-Pegasus.
+That said, the idea of replacing random attention with graph-assisted masks may still be useful, and this code could serve as a starting point for others exploring long-context paraphrasing with structural priors.
+```
 
-Automatically generating paraphrases is crucial for various natural language processing tasks. Current approaches primarily try to control the surface form of generated paraphrases by resorting to syntactic graph structures. However, paraphrase generation is rooted in semantics, but there are almost no works trying to leverage semantic structures as inductive biases for the task of generating paraphrases. We propose SAPG, a semantically-aware paraphrase generation model, which encodes Abstract Meaning Representation (AMR) graphs into a pretrained language model using a graph neural network-based encoder. We demonstrate that SAPG enables the generation of more diverse paraphrases by transforming the input AMR graphs, allowing for control over the output generations' surface forms rooted in semantics. This approach ensures that the semantic meaning is preserved, offering flexibility in paraphrase generation without sacrificing fluency or coherence. Our extensive evaluation on two widely-used paraphrase generation datasets confirms the effectiveness of this method.
+Features:
+
+✅ Plug-in graph mask replaces BigBird random sub-mask
+
+✅ Works with pseudo-semantic graphs (cheap to compute, no gold AMR required)
+
+✅ Scripts for data prep, training, testing, and inference
+
+✅ Fair comparison toggles: with / without graph
 
 ## Installation
 
-### Create conda environment
+### 1. Create conda environment
 To set up a fresh conda environment with all required dependencies, run:
 ```bash
 conda env create -f environment.yml
 ```
 
-### Download pseudo-semantic graphs
+### 2. Download pseudo-semantic graphs
 We use pseudo-semantic graphs from [sem_para_gen](https://github.com/afonso-sousa/sem_para_gen.git).
 1. Copy the /pseudo_semantic_graph folder to your project's root directory.
 2. Note: You'll need to manually install `coreferee` for coreference resolution due to compatibility issues (see [this issue](https://github.com/richardpaulhudson/coreferee/issues/29)).
@@ -62,3 +77,13 @@ sh ./scripts/train_with_graph.sh
 ```
 sh ./scripts/test_with_graph.sh
 ```
+
+### How the Graph Mask Works (1-minute read)
+
+- We bucket tokens into blocks (BigBird style).
+
+- For each example, we build a block-level adjacency list from the pseudo-semantic graph edges (token → token → block).
+
+- During training, attention’s random block connections are replaced by these graph connections.
+
+- During evaluation/inference, we return a zero mask (mirroring BigBird’s no-randomness at eval), ensuring deterministic behavior and comparable latency.
