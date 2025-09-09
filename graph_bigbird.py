@@ -109,6 +109,13 @@ class GraphBigBirdPegasusBlockSparseAttention(BigBirdPegasusBlockSparseAttention
         num_blocks = from_seq_length // from_block_size
         batch_size = len(graph_edges_batch)
 
+        if not self.training:
+            mask = torch.zeros(
+                (batch_size, n_heads, num_blocks, 1),
+                dtype=torch.long,
+            )
+            return mask
+
         all_adj_lists = []
         max_conn_overall = 0
 
