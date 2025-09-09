@@ -129,7 +129,8 @@ class TreeNode(PruneAndMergeMixin, RearrangeMixin, VisualizationMixin):
             for child in node.children:
                 child_index = len(nodes)
                 # Append an edge tuple to the list of edges
-                edges.append((parent_index, child_index, child.dep))
+                if child.dep != "ROOT":
+                    edges.append((parent_index, child_index, child.dep))
                 # Recursively traverse the child node
                 traverse(child, child_index)
 

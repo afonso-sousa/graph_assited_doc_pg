@@ -1,10 +1,8 @@
-"""
-Evaluation script for T5 model.
-"""
-
 import argparse
 import logging
 import os
+import re
+from functools import partial
 
 import datasets
 import evaluate
@@ -15,10 +13,19 @@ import transformers
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
-from datasets import load_dataset
+from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, DataCollatorForSeq2Seq
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    BigBirdPegasusConfig,
+    DataCollatorForSeq2Seq,
+)
+
+from graph_bigbird import GraphBigBirdPegasusForConditionalGeneration
+from graph_collator import GraphDataCollator
+from train import preprocess_function
 
 logger = get_logger(__name__)
 
@@ -26,7 +33,7 @@ logger = get_logger(__name__)
 # Parsing input arguments
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Evaluate a T5 model for text generation"
+        description="Evaluate a BigBird model for text generation"
     )
     parser.add_argument(
         "--dataset_name",
@@ -45,6 +52,11 @@ def parse_args():
         type=str,
         default="test",
         help="The dataset split to evaluate on (e.g., 'test').",
+    )
+    parser.add_argument(
+        "--with_graph",
+        action="store_true",
+        help="Use the custom BigBird variant with graph support.",
     )
     parser.add_argument(
         "--predict_output_file",
@@ -111,19 +123,25 @@ def main():
     accelerator.wait_for_everyone()
 
     logger.info(f"Loading '{args.dataset_name}' dataset")
-    if args.dataset_name == "paws":
-        dataset = load_dataset(args.dataset_name, "labeled_final")
-        dataset = dataset.filter(lambda x: x["label"] == 1)
-        dataset = dataset.rename_column("sentence1", "source")
-        dataset = dataset.rename_column("sentence2", "target")
-    else:
-        dataset = load_dataset(args.dataset_name)
+    dataset = load_from_disk(args.dataset_name)
 
     logger.info(f"Loading checkpoint '{args.model_name_or_path}'")
     path_components = args.model_name_or_path.split(os.sep)
     model_hub_path = os.path.join(*path_components[1:])
-    tokenizer = AutoTokenizer.from_pretrained(model_hub_path)
-    model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
+    # Matches:
+    #   _with_graph_1, _with_graph_2, ..., _with_graph_10, _1, _2, _3, etc.
+    clean_name = re.sub(r"(?:_with_graph)?_\d+$", "", model_hub_path)
+    tokenizer = AutoTokenizer.from_pretrained(clean_name)
+
+    config = BigBirdPegasusConfig.from_pretrained(args.model_name_or_path)
+    if args.with_graph:
+        model = GraphBigBirdPegasusForConditionalGeneration.from_pretrained(
+            args.model_name_or_path, config=config
+        )
+    else:
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            args.model_name_or_path, config=config
+        )
 
     # Resize embeddings if necessary
     embedding_size = model.get_input_embeddings().weight.shape[0]
@@ -135,38 +153,38 @@ def main():
             "Make sure that `config.decoder_start_token_id` is correctly defined"
         )
 
-    # Preprocessing the datasets
-    def preprocess_function(examples):
-        inputs = examples["source"]
-        targets = examples["target"]
-        model_inputs = tokenizer(
-            inputs, max_length=args.max_seq_length, truncation=True
-        )
-        labels = tokenizer(
-            targets, max_length=args.max_seq_length, truncation=True
-        ).input_ids
-        model_inputs["labels"] = labels
-        return model_inputs
+    eval_dataset = dataset[args.split]
+    eval_dataset = eval_dataset.select(range(0, 100, 10))
+    preprocess_partial = partial(preprocess_function, tokenizer=tokenizer, args=args)
 
     with accelerator.main_process_first():
-        processed_datasets = dataset.map(
-            preprocess_function,
+        eval_dataset = eval_dataset.map(
+            preprocess_partial,
             batched=True,
             remove_columns=dataset[args.split].column_names,
             desc="Running tokenizer on dataset",
         )
 
-    eval_dataset = processed_datasets[args.split]
     # eval_dataset = eval_dataset.select(range(10))
 
     # DataLoader creation
     label_pad_token_id = -100
-    data_collator = DataCollatorForSeq2Seq(
-        tokenizer,
-        model=model,
-        label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=8 if accelerator.mixed_precision == "fp16" else None,
-    )
+
+    if args.with_graph:
+        data_collator = GraphDataCollator(
+            tokenizer,
+            model=model,
+            label_pad_token_id=label_pad_token_id,
+            pad_to_multiple_of=8 if accelerator.mixed_precision == "fp16" else None,
+        )
+    else:
+        data_collator = DataCollatorForSeq2Seq(
+            tokenizer,
+            model=model,
+            label_pad_token_id=label_pad_token_id,
+            pad_to_multiple_of=8 if accelerator.mixed_precision == "fp16" else None,
+        )
+
     eval_dataloader = DataLoader(
         eval_dataset,
         collate_fn=data_collator,
@@ -199,11 +217,19 @@ def main():
     references = []
     for step, batch in tqdm(enumerate(eval_dataloader), total=len(eval_dataloader)):
         with torch.no_grad():
-            generated_tokens = accelerator.unwrap_model(model).generate(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                **gen_kwargs,
-            )
+            if args.with_graph:
+                generated_tokens = accelerator.unwrap_model(model).generate(
+                    batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    graph_edges=batch.get("graph_edges", None),
+                    **gen_kwargs,
+                )
+            else:
+                generated_tokens = accelerator.unwrap_model(model).generate(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    **gen_kwargs,
+                )
             generated_tokens = accelerator.pad_across_processes(
                 generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
             )

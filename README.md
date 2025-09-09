@@ -54,11 +54,11 @@ sh ./scripts/split_dataset_with_graph.sh
 _Note: As it is, the former script randomly splits the data, while the latter uses the indices generated from the former scripts' execution to split the data for fair comparison._
 
 ## Train and test models
-To train/test SAPG or any other model refered to in the paper you can run the corresponding script. For example:
+To train/test the model run the respective script at `./scripts`. For example:
 ```
-sh ./scripts/train_graph_amr.sh
+sh ./scripts/train_with_graph.sh
 ```
 
 ```
-sh ./scripts/test_graph_amr.sh
+sh ./scripts/test_with_graph.sh
 ```

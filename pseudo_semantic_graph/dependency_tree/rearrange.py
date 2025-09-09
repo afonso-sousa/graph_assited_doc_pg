@@ -35,38 +35,39 @@ class RearrangeMixin:
         if hasattr(self, "modifiers"):
             self.modifiers.extend([p for p in promoted if p.dep not in SUBJ_LABELS and not p.onto_tag.startswith("VB")])
 
-    def _redirect_root_conj_verb_subjects(self) -> None:
+    def _promote_conj_verb_clauses(self) -> None:
         """
-        Promote verb conjuncts under ROOT and attach them to the main subject if they lack their own.
-        E.g., "He worked in France and lived in Italy" -> 'lived' should be attached under 'He'
+        Promote all conjunct verbs under a root or clausal verb to the same level,
+        attaching them to the main subject if needed, and removing 'conj' edges.
         """
-        if self.dep != "ROOT":
+        if self.dep != "ROOT" and not self.onto_tag.startswith("VB"):
             return
 
-        # Find all subject(s) under root
-        primary_subjects = [arg for arg in getattr(self, "arguments", []) if arg.dep in SUBJ_LABELS]
-        breakpoint()
-        if not primary_subjects:
+        # Determine anchor subject
+        subject_nodes = [a for a in getattr(self, "arguments", []) if a.dep in SUBJ_LABELS]
+        if not subject_nodes:
             return
+        anchor_subject = subject_nodes[0]
 
-        primary_subject = primary_subjects[0]
+        # Search for conjunct verb children in arguments and modifiers
+        for container in [self.arguments, self.modifiers]:
+            to_promote = []
+            for node in container:
+                if node.dep == "conj" and node.onto_tag.startswith("VB"):
+                    # Check if the conj-verb already has its own subject
+                    has_subject = any(
+                        child.dep in SUBJ_LABELS
+                        for child in getattr(node, "arguments", []) + getattr(node, "modifiers", [])
+                    )
+                    if not has_subject:
+                        node.dep = anchor_subject.dep
+                        anchor_subject.arguments.append(node)
+                        to_promote.append(node)
+                    else:
+                        node.dep = "ROOT"
 
-        conjunct_verbs = []
-        for node in getattr(self, "arguments", []):
-            if node.dep == "conj" and node.onto_tag.startswith("VB"):
-                conjunct_verbs.append((node, "arguments"))
-        for node in getattr(self, "modifiers", []):
-            if node.dep == "conj" and node.onto_tag.startswith("VB"):
-                conjunct_verbs.append((node, "modifiers"))
-
-        for node, container_name in conjunct_verbs:
-            has_subject = any(a.dep in SUBJ_LABELS for a in getattr(node, "arguments", []))
-            if not has_subject:
-                node.dep = primary_subject.dep
-                primary_subject.arguments.append(node)
-
-                # Remove from original container
-                container = getattr(self, container_name)
+            # Remove promoted verbs from the original container
+            for node in to_promote:
                 container.remove(node)
 
     def rearrange(self) -> None:
@@ -74,4 +75,4 @@ class RearrangeMixin:
         Main method to promote conjuncts and reroute subjects of root-level verbs.
         """
         self._promote_conj_children()
-        self._redirect_root_conj_verb_subjects()
+        self._promote_conj_verb_clauses()

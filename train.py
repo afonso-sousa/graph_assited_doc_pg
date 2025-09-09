@@ -17,10 +17,17 @@ from accelerate.utils import set_seed
 from datasets import load_from_disk
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from transformers import (AutoModelForSeq2SeqLM, AutoTokenizer,
-                          DataCollatorForSeq2Seq, SchedulerType, get_scheduler)
+from transformers import (
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    BigBirdPegasusConfig,
+    DataCollatorForSeq2Seq,
+    SchedulerType,
+    get_scheduler,
+)
 
-from custom_model import CustomLongT5ForConditionalGeneration
+from graph_bigbird import GraphBigBirdPegasusForConditionalGeneration
+from graph_collator import GraphDataCollator
 
 logger = get_logger(__name__)
 nlp = spacy.load("en_core_web_lg")
@@ -41,7 +48,7 @@ def preprocess_function(examples, tokenizer, args):
         padding="max_length",
         is_split_into_words=True,
         return_offsets_mapping=True,
-        return_tensors="pt"
+        return_tensors="pt",
     )
 
     tokenized_targets = tokenizer(
@@ -49,7 +56,7 @@ def preprocess_function(examples, tokenizer, args):
         max_length=args.max_seq_length,
         truncation=True,
         padding="max_length",
-        return_tensors="pt"
+        return_tensors="pt",
     )
 
     model_inputs = {
@@ -71,17 +78,33 @@ def preprocess_function(examples, tokenizer, args):
                 if word_idx is not None:
                     word_to_tokens[word_idx].append(token_idx)
 
-            # Build token-level edges from word-level graph edges
             token_edges = set()
+            connected_word_indices = set()
+
+            # Inter-word edges
             for edge in graph.get("edges", []):
                 from_node_idx = edge["from"]
                 to_node_idx = edge["to"]
                 from_token_ids = word_to_tokens.get(from_node_idx, [])
                 to_token_ids = word_to_tokens.get(to_node_idx, [])
-                for tid1 in from_token_ids:
-                    for tid2 in to_token_ids:
+
+                if from_token_ids and to_token_ids:
+                    connected_word_indices.add(from_node_idx)
+                    connected_word_indices.add(to_node_idx)
+                    for tid1 in from_token_ids:
+                        for tid2 in to_token_ids:
+                            token_edges.add((tid1, tid2))
+                            token_edges.add((tid2, tid1))  # bidirectional
+
+            # Intra-word edges
+            for word_idx in connected_word_indices:
+                token_indices = word_to_tokens[word_idx]
+                for i in range(len(token_indices)):
+                    for j in range(i + 1, len(token_indices)):
+                        tid1 = token_indices[i]
+                        tid2 = token_indices[j]
                         token_edges.add((tid1, tid2))
-                        token_edges.add((tid2, tid1))  # Add reverse edge for undirected graph
+                        token_edges.add((tid2, tid1))  # symmetric
 
             graph_edges_batch.append(list(token_edges))
 
@@ -101,13 +124,19 @@ def parse_args():
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="google/long-t5-tglobal-base",
+        default="google/bigbird-pegasus-large-arxiv",
         help="The model checkpoint for weights initialization.",
     )
     parser.add_argument(
         "--with_graph",
         action="store_true",
-        help="Use the custom LongT5 variant with graph support.",
+        help="Use the custom BigBird variant with graph support.",
+    )
+    parser.add_argument(
+        "--block_size",
+        type=int,
+        default=64,
+        help="The block size for the BigBird attention mechanism.",
     )
     parser.add_argument(
         "--max_seq_length",
@@ -224,15 +253,68 @@ def main():
 
     # Load the tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path)
-    
+
+    config = BigBirdPegasusConfig.from_pretrained(args.model_name_or_path)
+    config.block_size = args.block_size
+
     if args.with_graph:
-        from transformers import LongT5Config
-        config = LongT5Config.from_pretrained(args.model_name_or_path)
-        model = CustomLongT5ForConditionalGeneration.from_pretrained(args.model_name_or_path, config=config)
+        model = GraphBigBirdPegasusForConditionalGeneration.from_pretrained(
+            args.model_name_or_path, config=config
+        )
     else:
-        model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name_or_path)
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            args.model_name_or_path, config=config
+        )
 
     dataset = load_from_disk(args.dataset_name)
+
+    # import numpy as np
+    # from datasets import DatasetDict
+
+    # def check_dataset_nulls(dataset_dict: DatasetDict) -> dict:
+    #     """
+    #     Checks for null/empty/NaN values in all splits of a DatasetDict.
+    #     Returns a summary dictionary with problematic columns and counts.
+    #     """
+    #     results = {}
+
+    #     for split_name, dataset in dataset_dict.items():
+    #         # Check for None, empty strings, or NaN
+    #         def has_null(example):
+    #             return {
+    #                 col: (
+    #                     example[col] is None
+    #                     or (
+    #                         isinstance(example[col], str) and example[col].strip() == ""
+    #                     )
+    #                     or (
+    #                         isinstance(example[col], (int, float))
+    #                         and np.isnan(example[col])
+    #                     )
+    #                 )
+    #                 for col in example.keys()
+    #             }
+
+    #         # Apply null check
+    #         null_results = dataset.map(
+    #             has_null,
+    #             batched=False,
+    #             remove_columns=dataset.column_names,
+    #         )
+
+    #         # Summarize results
+    #         split_stats = {
+    #             col: sum(null_results[col]) for col in null_results.column_names
+    #         }
+
+    #         results[split_name] = split_stats
+
+    #     return results
+
+    # # Usage during breakpoint()
+    # null_summary = check_dataset_nulls(dataset)
+    # print("Null/Empty/NaN Summary:\n", null_summary)
+    # breakpoint()
 
     column_names = dataset["train"].column_names
 
@@ -252,20 +334,47 @@ def main():
         remove_columns=column_names,
     )
 
+    if args.with_graph:
+
+        def is_valid_graph_edge_entry(
+            example, max_token_length: int, threshold: int = 0
+        ):
+            """
+            Returns True if the example's 'graph_edges' are valid:
+            - At least `threshold` edges
+            - All token indices in-bounds
+            """
+            edges = example.get("graph_edges", [])
+            if not isinstance(edges, list) or len(edges) <= threshold:
+                return False
+
+            for src, tgt in edges:
+                if not (0 <= src < max_token_length) or not (
+                    0 <= tgt < max_token_length
+                ):
+                    return False
+
+            return True
+
+        print(f"{len(train_dataset)} training examples before filtering")
+        train_dataset = train_dataset.filter(
+            lambda example: is_valid_graph_edge_entry(example, args.max_seq_length),
+            desc="Filtering out invalid graph edge examples",
+        )
+        print(f"{len(train_dataset)} training examples after filtering")
+
+        print(f"{len(eval_dataset)} evaluation examples before filtering")
+        eval_dataset = eval_dataset.filter(
+            lambda example: is_valid_graph_edge_entry(example, args.max_seq_length),
+            desc="Filtering out invalid graph edge examples",
+        )
+        print(f"{len(eval_dataset)} evaluation examples after filtering")
+
+    eval_dataset = eval_dataset.select(range(0, 100, 10))
+
     # Data collator
     if args.with_graph:
-        class CustomDataCollator(DataCollatorForSeq2Seq):
-            def __call__(self, features):
-                # Separate out graph_edges
-                graph_edges = [f.pop("graph_edges") for f in features]
-
-                # Use default collator for the rest
-                batch = super().__call__(features)
-
-                # Add graph_edges back manually
-                batch["graph_edges"] = graph_edges
-                return batch
-        data_collator = CustomDataCollator(tokenizer, model=model)
+        data_collator = GraphDataCollator(tokenizer, model=model)
     else:
         data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
 
@@ -402,10 +511,9 @@ def main():
             loss = outputs.loss
             loss = loss / args.gradient_accumulation_steps
             accelerator.backward(loss)
-            if (
-                (step + 1) % args.gradient_accumulation_steps == 0
-                or step == len(train_dataloader) - 1
-            ):
+            if (step + 1) % args.gradient_accumulation_steps == 0 or step == len(
+                train_dataloader
+            ) - 1:
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -427,11 +535,19 @@ def main():
         references = []
         for step, batch in enumerate(eval_dataloader):
             with torch.no_grad():
-                generated_tokens = accelerator.unwrap_model(model).generate(
-                    batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    max_length=args.max_seq_length,
-                )
+                if args.with_graph:
+                    generated_tokens = accelerator.unwrap_model(model).generate(
+                        batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        graph_edges=batch.get("graph_edges", None),
+                        max_length=args.max_seq_length,
+                    )
+                else:
+                    generated_tokens = accelerator.unwrap_model(model).generate(
+                        batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        max_length=args.max_seq_length,
+                    )
                 decoded_preds = tokenizer.batch_decode(
                     generated_tokens, skip_special_tokens=True
                 )
